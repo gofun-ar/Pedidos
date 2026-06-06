@@ -476,7 +476,31 @@
   }
 
   /* ===== Settings modal ===== */
-  .modal-bg {
+  .station-check-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 8px 10px;
+    border-radius: 6px;
+    cursor: pointer;
+    transition: background 0.12s;
+  }
+  .station-check-row:hover { background: var(--gf-surface2); }
+  .station-check-row input[type=checkbox] {
+    width: 16px; height: 16px;
+    accent-color: var(--gf-pink);
+    cursor: pointer;
+    flex-shrink: 0;
+  }
+  .station-check-label { font-size: 14px; color: var(--gf-text); flex: 1; }
+  .station-check-id { font-size: 11px; color: var(--gf-text-dim); }
+  .station-empty {
+    padding: 14px 10px;
+    font-size: 13px;
+    color: var(--gf-text-dim);
+    text-align: center;
+    line-height: 1.5;
+  }
     position: fixed; inset: 0;
     background: rgba(0,0,0,0.75);
     display: none;
@@ -848,9 +872,12 @@
       <div id="cfgVenueName" style="font-size:16px;font-weight:700;color:var(--gf-text);">—</div>
     </div>
 
-    <label>Estaciones a mostrar (IDs separados por coma)</label>
-    <input id="cfgStationIds" placeholder="2142, 2372">
-    <div class="help">Solo se muestran las tarjetas de las stations indicadas. Dejar vacío para mostrar todas.</div>
+    <label>Estaciones a mostrar</label>
+    <div id="cfgStationsList" style="
+      background:var(--gf-bg);border:1px solid var(--gf-border2);
+      border-radius:6px;padding:6px 4px;max-height:160px;overflow-y:auto;">
+    </div>
+    <div class="help">Marcá las estaciones que querés ver. Sin ninguna marcada, se muestran todas.</div>
 
     <label>Intervalo de actualización (segundos)</label>
     <input id="cfgPoll" type="number" min="1" max="60" value="3">
@@ -884,6 +911,7 @@ const LS = {
   ORDERS:    'tokyo.queue.orders',     // Map<orderId, rawOrder>
   OPERATORS: 'tokyo.queue.operators',  // Map<operatorId, {name, surname}>
   SEQ:       'tokyo.queue.sequence',   // long
+  STATIONS:  'tokyo.queue.stations',   // Map<stationId, stationName>
 };
 
 const DEFAULT_CONFIG = {
@@ -904,6 +932,7 @@ const state = {
   refundedMap: loadLS(LS.REFUNDED, {}),
   knownOrders: loadLS(LS.ORDERS, {}),
   operatorsMap: loadLS(LS.OPERATORS, {}),
+  stationsMap: loadLS(LS.STATIONS, {}),  // {id: name}
   lastSequence: 0,
   pollTimer: null,
   operatorsTimer: null,
@@ -914,6 +943,13 @@ const state = {
 state.lastSequence = state.config.startSequence;
 const persistedSeq = parseInt(localStorage.getItem(LS.SEQ) || '0', 10);
 if (persistedSeq > state.lastSequence) state.lastSequence = persistedSeq;
+
+// Poblar stationsMap desde knownOrders en caché
+for (const order of Object.values(state.knownOrders)) {
+  if (order.station && order.station.id != null && order.station.name) {
+    state.stationsMap[String(order.station.id)] = order.station.name;
+  }
+}
 
 /* ===========================
    PERSISTENCE
@@ -935,6 +971,7 @@ function saveRefunded()  { localStorage.setItem(LS.REFUNDED,  JSON.stringify(sta
 function saveOrders()    { localStorage.setItem(LS.ORDERS,    JSON.stringify(state.knownOrders)); }
 function saveOperators() { localStorage.setItem(LS.OPERATORS, JSON.stringify(state.operatorsMap)); }
 function saveSequence()  { localStorage.setItem(LS.SEQ,       String(state.lastSequence)); }
+function saveStations()  { localStorage.setItem(LS.STATIONS,  JSON.stringify(state.stationsMap)); }
 
 function pruneServed() {
   const cutoff = Date.now() - state.config.pruneHours * 3600 * 1000;
@@ -1238,9 +1275,18 @@ function render() {
   }
 
   if (!state._loggedStations) state._loggedStations = new Set();
+  let stationsUpdated = false;
   for (const [sid, name] of seenStations) {
-    if (!state._loggedStations.has(sid)) { state._loggedStations.add(sid); console.log(`[stations] id=${sid}  name="${name}"`); }
+    if (!state._loggedStations.has(sid)) {
+      state._loggedStations.add(sid);
+      console.log(`[stations] id=${sid}  name="${name}"`);
+    }
+    if (name && state.stationsMap[sid] !== name) {
+      state.stationsMap[sid] = name;
+      stationsUpdated = true;
+    }
   }
+  if (stationsUpdated) saveStations();
   if (allowedStations.length > 0 && hiddenByStation > 0) console.log(`[stations] ${hiddenByStation} pedidos ocultos por filtro (${allowedStations.join(',')})`);
 
   pending.sort((a,b) => new Date(a.date) - new Date(b.date));
@@ -1700,9 +1746,8 @@ async function loadVenueConfig() {
    SETTINGS MODAL
    =========================== */
 function openSettings() {
-  document.getElementById('cfgStationIds').value = (state.config.stationIds || []).join(', ');
-  document.getElementById('cfgPoll').value        = state.config.pollSec    || 3;
-  document.getElementById('cfgPrune').value       = state.config.pruneHours || 6;
+  document.getElementById('cfgPoll').value  = state.config.pollSec    || 3;
+  document.getElementById('cfgPrune').value = state.config.pruneHours || 6;
   document.getElementById('cfgVenueName').textContent = state.config.venueName || state.config.venueSlug || '—';
   document.getElementById('cfgStatusInfo').innerHTML =
     `<span style="font-size:15px;font-weight:700;color:var(--gf-text);">${state.lastSequence.toLocaleString('es-AR')}</span>
@@ -1710,6 +1755,26 @@ function openSettings() {
      <span style="font-size:12px;color:var(--gf-text-dim);margin-top:2px;display:block;">
        ${Object.keys(state.knownOrders).length} pedidos en caché
      </span>`;
+
+  // Render station checkboxes
+  const container = document.getElementById('cfgStationsList');
+  const stations   = state.stationsMap; // {id: name}
+  const selected   = new Set((state.config.stationIds || []).map(String));
+  const ids = Object.keys(stations).sort((a,b) => stations[a].localeCompare(stations[b]));
+
+  if (!ids.length) {
+    container.innerHTML = `<div class="station-empty">
+      Las estaciones aparecen aquí automáticamente<br>luego de recibir los primeros pedidos.
+    </div>`;
+  } else {
+    container.innerHTML = ids.map(id => `
+      <label class="station-check-row">
+        <input type="checkbox" value="${id}" ${selected.has(id) ? 'checked' : ''}>
+        <span class="station-check-label">${escapeHtml(stations[id])}</span>
+        <span class="station-check-id">#${id}</span>
+      </label>`).join('');
+  }
+
   document.getElementById('modalBg').classList.add('show');
 }
 function closeSettings() {
@@ -1718,8 +1783,9 @@ function closeSettings() {
 document.getElementById('btnSettings').addEventListener('click', openSettings);
 document.getElementById('btnCancel').addEventListener('click', closeSettings);
 document.getElementById('btnSave').addEventListener('click', () => {
-  const stationIds = document.getElementById('cfgStationIds').value
-    .split(',').map(s => parseInt(s.trim(), 10)).filter(n => !isNaN(n));
+  // Lee los checkboxes de estaciones
+  const checked = document.querySelectorAll('#cfgStationsList input[type=checkbox]:checked');
+  const stationIds = [...checked].map(cb => parseInt(cb.value, 10)).filter(n => !isNaN(n));
   const pollSec    = parseInt(document.getElementById('cfgPoll').value,  10) || 3;
   const pruneHours = parseInt(document.getElementById('cfgPrune').value, 10) || 6;
 
