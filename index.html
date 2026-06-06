@@ -1662,11 +1662,20 @@ async function loadVenueConfig() {
       forceFilterByDevice: cfg.forceFilterByDevice || false,
       venueName:           cfg.venueName           || venue,
       venueSlug:           venue,
+      startSequence:       cfg.startSequence       || 0,
       stationIds:   over.stationIds  !== undefined ? over.stationIds  : (cfg.stationIds  || []),
       pollSec:      over.pollSec     !== undefined ? over.pollSec     : (cfg.pollSec     || 3),
       pruneHours:   over.pruneHours  !== undefined ? over.pruneHours  : (cfg.pruneHours  || 6),
     };
     saveConfig();
+
+    // Si el localStorage no tiene sequence guardado, usar el del JSON como punto de partida
+    const persistedSeq = parseInt(localStorage.getItem(LS.SEQ) || '0', 10);
+    if (persistedSeq === 0 && cfg.startSequence > 0) {
+      state.lastSequence = cfg.startSequence;
+      saveSequence();
+      console.log(`[venue] Sequence inicializado desde config: ${cfg.startSequence}`);
+    }
 
     // Update header
     const sub = document.querySelector('.brand-sub');
@@ -1695,8 +1704,12 @@ function openSettings() {
   document.getElementById('cfgPoll').value        = state.config.pollSec    || 3;
   document.getElementById('cfgPrune').value       = state.config.pruneHours || 6;
   document.getElementById('cfgVenueName').textContent = state.config.venueName || state.config.venueSlug || '—';
-  document.getElementById('cfgStatusInfo').textContent =
-    `Sequence: ${state.lastSequence} · Pedidos en caché: ${Object.keys(state.knownOrders).length}`;
+  document.getElementById('cfgStatusInfo').innerHTML =
+    `<span style="font-size:15px;font-weight:700;color:var(--gf-text);">${state.lastSequence.toLocaleString('es-AR')}</span>
+     <span style="color:var(--gf-text-dim);font-size:11px;margin-left:6px;">sequence actual</span><br>
+     <span style="font-size:12px;color:var(--gf-text-dim);margin-top:2px;display:block;">
+       ${Object.keys(state.knownOrders).length} pedidos en caché
+     </span>`;
   document.getElementById('modalBg').classList.add('show');
 }
 function closeSettings() {
@@ -1728,17 +1741,18 @@ document.getElementById('btnSave').addEventListener('click', () => {
   render();
 });
 document.getElementById('btnReset').addEventListener('click', () => {
-  if (confirm('¿Borrar TODO el estado local? (pedidos en cache, estado servido, sequence). No afecta a la API.')) {
-    state.servedMap = {};
+  if (confirm('¿Borrar el estado local? Se eliminan pedidos en caché, servidos y reembolsados.\n\nEl sequence se conserva para no perder el punto de sincronización.')) {
+    const seqBackup = state.lastSequence; // preservar sequence
+    state.servedMap   = {};
     state.refundedMap = {};
     state.knownOrders = {};
     state.operatorsMap = {};
-    state.lastSequence = state.config.startSequence || 0;
+    state.lastSequence = seqBackup;      // restaurar
     saveServed();
     saveRefunded();
     saveOrders();
     saveOperators();
-    saveSequence();
+    saveSequence();                      // persiste el sequence intacto
     render();
   }
 });
