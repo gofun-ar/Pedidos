@@ -989,7 +989,36 @@ function loadLS(key, def, mergeWithDefault) {
 function saveConfig()    { localStorage.setItem(LS.CONFIG,    JSON.stringify(state.config)); }
 function saveServed()    { localStorage.setItem(LS.SERVED,    JSON.stringify(state.servedMap)); }
 function saveRefunded()  { localStorage.setItem(LS.REFUNDED,  JSON.stringify(state.refundedMap)); }
-function saveOrders()    { localStorage.setItem(LS.ORDERS,    JSON.stringify(state.knownOrders)); }
+function saveOrders() {
+  try {
+    localStorage.setItem(LS.ORDERS, JSON.stringify(state.knownOrders));
+  } catch (e) {
+    // Cuota de localStorage excedida: limpieza de emergencia.
+    // Eliminar del caché los pedidos servidos/reembolsados más viejos y reintentar.
+    console.warn('[storage] Cuota excedida, ejecutando limpieza de emergencia');
+    const closed = Object.keys(state.knownOrders)
+      .filter(id => state.servedMap[id] || state.refundedMap[id])
+      .sort((a, b) => {
+        const ta = new Date(state.knownOrders[a].notified_at || 0).getTime();
+        const tb = new Date(state.knownOrders[b].notified_at || 0).getTime();
+        return ta - tb; // más viejos primero
+      });
+    const toDrop = closed.slice(0, Math.max(50, Math.floor(closed.length / 2)));
+    for (const id of toDrop) {
+      delete state.knownOrders[id];
+      delete state.servedMap[id];
+      delete state.refundedMap[id];
+    }
+    console.warn(`[storage] ${toDrop.length} pedidos cerrados eliminados del caché`);
+    try {
+      localStorage.setItem(LS.ORDERS,   JSON.stringify(state.knownOrders));
+      localStorage.setItem(LS.SERVED,   JSON.stringify(state.servedMap));
+      localStorage.setItem(LS.REFUNDED, JSON.stringify(state.refundedMap));
+    } catch (e2) {
+      console.error('[storage] Sigue excedida tras limpieza:', e2.message);
+    }
+  }
+}
 function saveOperators() { localStorage.setItem(LS.OPERATORS, JSON.stringify(state.operatorsMap)); }
 function saveSequence()  { localStorage.setItem(LS.SEQ,       String(state.lastSequence)); }
 function saveStations()  { localStorage.setItem(LS.STATIONS,  JSON.stringify(state.stationsMap)); }
@@ -1004,7 +1033,14 @@ function pruneServed() {
       changed = true;
     }
   }
-  if (changed) { saveServed(); saveOrders(); }
+  for (const [id, entry] of Object.entries(state.refundedMap)) {
+    if (entry.at < cutoff) {
+      delete state.refundedMap[id];
+      delete state.knownOrders[id];
+      changed = true;
+    }
+  }
+  if (changed) { saveServed(); saveRefunded(); saveOrders(); }
 }
 
 /* ===========================
@@ -1064,6 +1100,34 @@ async function fetchTransactionsFromAPI() {
   // del Response interno del printer en Kotlin, no la clave del JSON).
   const txs = Array.isArray(resp) ? resp : (resp.data || resp.transactions || []);
 
+// Reduce el pedido crudo a solo los campos que la app usa.
+// Recorta ~80% del tamaño en localStorage.
+function slimTransaction(t) {
+  return {
+    id:           t.id,
+    reference:    t.reference,
+    notified_at:  t.notified_at,
+    created_at:   t.created_at,
+    sequence:     t.sequence,
+    operator_id:  t.operator_id,
+    location:     t.location,
+    station:      t.station ? { id: t.station.id, name: t.station.name } : null,
+    order_lines:  (Array.isArray(t.order_lines) ? t.order_lines : []).map(l => ({
+      id:                   l.id,
+      name:                 l.name,
+      quantity:             l.quantity,
+      value:                l.value,
+      price:                l.price,
+      item_entity:          l.item_entity,
+      parent_order_line_id: l.parent_order_line_id,
+    })),
+    order_payments: (Array.isArray(t.order_payments) ? t.order_payments : []).map(p => ({
+      amount: p.amount,
+    })),
+    _kds_seen_at: t._kds_seen_at,
+  };
+}
+
   // Acumular en knownOrders y avanzar lastSequence
   let maxSeq = state.lastSequence;
   let newCount = 0;
@@ -1087,7 +1151,7 @@ async function fetchTransactionsFromAPI() {
     } else {
       t._kds_seen_at = state.knownOrders[String(t.id)]._kds_seen_at; // preservar
     }
-    state.knownOrders[String(t.id)] = t;
+    state.knownOrders[String(t.id)] = slimTransaction(t);
     const s = Number(t.sequence) || 0;
     if (s > maxSeq) maxSeq = s;
   }
