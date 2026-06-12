@@ -905,14 +905,19 @@
 /* ===========================
    STATE & CONFIG
    =========================== */
+// Leer el venue slug de la URL de forma sincrónica para namespacing del localStorage
+const _venueSlug = (new URLSearchParams(window.location.search).get('v') ||
+                    new URLSearchParams(window.location.search).get('venue') ||
+                    'default').toLowerCase().trim();
+
 const LS = {
-  CONFIG:    'tokyo.queue.config',
-  SERVED:    'tokyo.queue.served',     // Map<orderId, {at}>
-  REFUNDED:  'tokyo.queue.refunded',   // Map<orderId, {at}>
-  ORDERS:    'tokyo.queue.orders',     // Map<orderId, rawOrder>
-  OPERATORS: 'tokyo.queue.operators',  // Map<operatorId, {name, surname}>
-  SEQ:       'tokyo.queue.sequence',   // long
-  STATIONS:  'tokyo.queue.stations',   // Map<stationId, stationName>
+  CONFIG:    _venueSlug + '.queue.config',
+  SERVED:    _venueSlug + '.queue.served',     // Map<orderId, {at}>
+  REFUNDED:  _venueSlug + '.queue.refunded',   // Map<orderId, {at}>
+  ORDERS:    _venueSlug + '.queue.orders',     // Map<orderId, rawOrder>
+  OPERATORS: _venueSlug + '.queue.operators',  // Map<operatorId, {name, surname}>
+  SEQ:       _venueSlug + '.queue.sequence',   // long
+  STATIONS:  _venueSlug + '.queue.stations',   // Map<stationId, stationName>
 };
 
 const DEFAULT_CONFIG = {
