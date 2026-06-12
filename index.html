@@ -826,7 +826,10 @@
 <div class="totals-panel" id="totalsPanel">
   <div class="totals-topbar">
     <div class="totals-title">📊 Resumen de Totales</div>
-    <button class="iconbtn" id="btnCloseTotals">✕ Cerrar</button>
+    <div style="display:flex;gap:8px;">
+      <button class="iconbtn" id="btnShareTotals">📤 Compartir</button>
+      <button class="iconbtn" id="btnCloseTotals">✕ Cerrar</button>
+    </div>
   </div>
   <div class="totals-body">
     <div class="totals-col">
@@ -910,15 +913,27 @@ const _venueSlug = (new URLSearchParams(window.location.search).get('v') ||
                     new URLSearchParams(window.location.search).get('venue') ||
                     'default').toLowerCase().trim();
 
+// Prefijo v2: invalida datos legados contaminados (de antes del namespacing por local)
 const LS = {
-  CONFIG:    _venueSlug + '.queue.config',
-  SERVED:    _venueSlug + '.queue.served',     // Map<orderId, {at}>
-  REFUNDED:  _venueSlug + '.queue.refunded',   // Map<orderId, {at}>
-  ORDERS:    _venueSlug + '.queue.orders',     // Map<orderId, rawOrder>
-  OPERATORS: _venueSlug + '.queue.operators',  // Map<operatorId, {name, surname}>
-  SEQ:       _venueSlug + '.queue.sequence',   // long
-  STATIONS:  _venueSlug + '.queue.stations',   // Map<stationId, stationName>
+  CONFIG:    'gofun2.' + _venueSlug + '.config',
+  SERVED:    'gofun2.' + _venueSlug + '.served',     // Map<orderId, {at}>
+  REFUNDED:  'gofun2.' + _venueSlug + '.refunded',   // Map<orderId, {at}>
+  ORDERS:    'gofun2.' + _venueSlug + '.orders',     // Map<orderId, rawOrder>
+  OPERATORS: 'gofun2.' + _venueSlug + '.operators',  // Map<operatorId, {name, surname}>
+  SEQ:       'gofun2.' + _venueSlug + '.sequence',   // long
+  STATIONS:  'gofun2.' + _venueSlug + '.stations',   // Map<stationId, stationName>
 };
+
+// Limpieza única de claves legadas (libera espacio y elimina datos contaminados)
+try {
+  const legacy = [];
+  for (let i = 0; i < localStorage.length; i++) {
+    const k = localStorage.key(i);
+    if (k && (k.includes('.queue.') || k.startsWith('gofun.overrides.'))) legacy.push(k);
+  }
+  legacy.forEach(k => localStorage.removeItem(k));
+  if (legacy.length) console.log(`[migración] ${legacy.length} claves legadas eliminadas`);
+} catch { /* nunca romper la app por esto */ }
 
 const DEFAULT_CONFIG = {
   url: 'https://api-ego.easygoband.com/prod-v2',
@@ -1052,11 +1067,23 @@ async function fetchTransactionsFromAPI() {
   // Acumular en knownOrders y avanzar lastSequence
   let maxSeq = state.lastSequence;
   let newCount = 0;
+  let autoArchived = false;
+  const archiveMs = (state.config.autoArchiveMin || 60) * 60 * 1000;
   for (const t of txs) {
     if (!t || !t.id) continue;
     if (!state.knownOrders[String(t.id)]) {
-      newCount++;
       t._kds_seen_at = Date.now();  // momento en que aparece en pantalla
+
+      // Auto-archivar: si el pedido es viejo (tablet apagada, primer arranque),
+      // marcarlo como servido directamente, sin sonido ni pantalla de pendientes
+      const notifiedAt = new Date(t.notified_at || t.created_at || Date.now()).getTime();
+      const isOld = (Date.now() - notifiedAt) > archiveMs;
+      if (isOld && !state.servedMap[String(t.id)] && !state.refundedMap[String(t.id)]) {
+        state.servedMap[String(t.id)] = { at: Date.now(), auto: true };
+        autoArchived = true;
+      } else {
+        newCount++;  // solo los frescos cuentan para el sonido
+      }
     } else {
       t._kds_seen_at = state.knownOrders[String(t.id)]._kds_seen_at; // preservar
     }
@@ -1069,6 +1096,7 @@ async function fetchTransactionsFromAPI() {
     saveSequence();
   }
   if (txs.length > 0) saveOrders();
+  if (autoArchived) saveServed();
   if (newCount > 0) playNewOrderSound();
 
   // Devolver TODAS las ordenes conocidas (no solo las recien traídas), normalizadas
@@ -1671,6 +1699,83 @@ document.getElementById('btnTotals').addEventListener('click', () => {
   refreshTotals();
   document.getElementById('totalsPanel').classList.add('show');
 });
+/* ===========================
+   COMPARTIR RESUMEN DEL TURNO
+   =========================== */
+function buildShiftSummaryText() {
+  const allowedStations = (state.config.stationIds || []).map(Number).filter(n => !Number.isNaN(n));
+  const pending = [], served = [], refunded = [];
+  for (const o of state.orders) {
+    const sid = o.raw && o.raw.station ? Number(o.raw.station.id) : null;
+    if (allowedStations.length > 0 && (sid == null || !allowedStations.includes(sid))) continue;
+    if (state.refundedMap[o.id]) refunded.push(o);
+    else if (state.servedMap[o.id]) served.push(o);
+    else pending.push(o);
+  }
+
+  const aServed   = aggregateProducts(served);
+  const aRefunded = aggregateProducts(refunded);
+  const aPending  = aggregateProducts(pending);
+  const timing    = computeTiming(served);
+
+  const d = new Date();
+  const pad = n => String(n).padStart(2, '0');
+  const fecha = `${pad(d.getDate())}/${pad(d.getMonth()+1)}/${d.getFullYear()} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+
+  const L = [];
+  L.push(`📊 *RESUMEN DE TURNO — ${(state.config.venueName || '').toUpperCase()}*`);
+  L.push(`🕐 ${fecha}`);
+  L.push('');
+  L.push(`✅ *Servidos:* ${aServed.orderCount} pedidos · $ ${fmtMoney(aServed.totalAmount)}`);
+  L.push(`❌ *Reembolsados:* ${aRefunded.orderCount} pedidos · $ ${fmtMoney(aRefunded.totalAmount)}`);
+  L.push(`⏳ *Pendientes:* ${aPending.orderCount} pedidos · $ ${fmtMoney(aPending.totalAmount)}`);
+  L.push('');
+
+  if (aServed.rows.length > 0) {
+    L.push('*Productos servidos:*');
+    for (const r of aServed.rows) {
+      L.push(`  ${r.qty}× ${r.name}${r.subtotal > 0 ? ` — $ ${fmtMoney(r.subtotal)}` : ''}`);
+    }
+    L.push('');
+  }
+
+  if (timing.count > 0) {
+    L.push(`⏱ *Tiempo promedio de preparación:* ${fmtDuration(timing.totalAvg)}`);
+    if (timing.byOp.length > 0) {
+      L.push('*Por operador:*');
+      for (const op of timing.byOp) {
+        L.push(`  ${op.name}: ${fmtDuration(op.avg)} (${op.count} pedidos)`);
+      }
+    }
+    L.push('');
+  }
+
+  L.push('_Generado por Gestión de Pedidos · Gofun_');
+  return L.join('\n');
+}
+
+document.getElementById('btnShareTotals').addEventListener('click', async () => {
+  const text = buildShiftSummaryText();
+  // navigator.share abre el menú nativo (WhatsApp incluido) en tablets/celulares
+  if (navigator.share) {
+    try {
+      await navigator.share({ text });
+      return;
+    } catch (e) {
+      if (e.name === 'AbortError') return; // usuario canceló, no hacer nada
+      // si falla por otra razón, cae al clipboard
+    }
+  }
+  // Fallback: copiar al portapapeles
+  try {
+    await navigator.clipboard.writeText(text);
+    alert('Resumen copiado al portapapeles.\nPegalo en WhatsApp o donde necesites.');
+  } catch {
+    // Último recurso: prompt con el texto seleccionable
+    prompt('Copiá el resumen manualmente:', text);
+  }
+});
+
 document.getElementById('btnCloseTotals').addEventListener('click', () => {
   document.getElementById('totalsPanel').classList.remove('show');
 });
@@ -1703,7 +1808,7 @@ async function loadVenueConfig() {
     const cfg = await resp.json();
 
     // Overrides editables por el local
-    const over = loadLS('gofun.overrides.' + venue, {});
+    const over = loadLS('gofun2.overrides.' + venue, {});
 
     state.config = {
       ...state.config,
@@ -1715,6 +1820,8 @@ async function loadVenueConfig() {
       venueName:           cfg.venueName           || venue,
       venueSlug:           venue,
       startSequence:       cfg.startSequence       || 0,
+      autoArchiveMin:      cfg.autoArchiveMin      || 60,
+      heartbeat:           cfg.heartbeat           || null,
       stationIds:   over.stationIds  !== undefined ? over.stationIds  : (cfg.stationIds  || []),
       pollSec:      over.pollSec     !== undefined ? over.pollSec     : (cfg.pollSec     || 3),
       pruneHours:   over.pruneHours  !== undefined ? over.pruneHours  : (cfg.pruneHours  || 6),
@@ -1803,7 +1910,7 @@ document.getElementById('btnSave').addEventListener('click', () => {
   // Guardar overrides del local por separado (sobreviven un reload de config)
   const venue = state.config.venueSlug || '';
   if (venue) {
-    localStorage.setItem('gofun.overrides.' + venue,
+    localStorage.setItem('gofun2.overrides.' + venue,
       JSON.stringify({ stationIds, pollSec, pruneHours }));
   }
 
@@ -1813,17 +1920,20 @@ document.getElementById('btnSave').addEventListener('click', () => {
   render();
 });
 document.getElementById('btnReset').addEventListener('click', () => {
-  if (confirm('¿Borrar el estado local? Se eliminan pedidos en caché, servidos y reembolsados.\n\nEl sequence se conserva para no perder el punto de sincronización.')) {
+  if (confirm('¿Borrar el estado local? Se eliminan pedidos en caché, servidos, reembolsados y estaciones.\n\nEl sequence se conserva para no perder el punto de sincronización.')) {
     const seqBackup = state.lastSequence; // preservar sequence
     state.servedMap   = {};
     state.refundedMap = {};
     state.knownOrders = {};
     state.operatorsMap = {};
+    state.stationsMap  = {};
+    state._loggedStations = new Set();
     state.lastSequence = seqBackup;      // restaurar
     saveServed();
     saveRefunded();
     saveOrders();
     saveOperators();
+    saveStations();
     saveSequence();                      // persiste el sequence intacto
     render();
   }
@@ -1844,11 +1954,54 @@ setInterval(tickClock, 1000); tickClock();
 setInterval(() => render(), 30000);
 
 /* ===========================
+   HEARTBEAT (monitoreo remoto)
+   Envía estado a un Google Form cada 5 min.
+   Se activa si el JSON del local tiene el bloque "heartbeat".
+   =========================== */
+function sendHeartbeat() {
+  const hb = state.config.heartbeat;
+  if (!hb || !hb.formUrl) return;
+
+  // Contar pendientes (mismas reglas de filtrado que la pantalla)
+  const allowedStations = (state.config.stationIds || []).map(Number).filter(n => !Number.isNaN(n));
+  let pending = 0;
+  for (const t of Object.values(state.knownOrders)) {
+    const id = String(t.id);
+    if (state.servedMap[id] || state.refundedMap[id]) continue;
+    const sid = t.station ? Number(t.station.id) : null;
+    if (allowedStations.length > 0 && (sid == null || !allowedStations.includes(sid))) continue;
+    pending++;
+  }
+
+  const body = new URLSearchParams();
+  if (hb.venueField)    body.append(hb.venueField,    state.config.venueName || state.config.venueSlug || '?');
+  if (hb.sequenceField) body.append(hb.sequenceField, String(state.lastSequence));
+  if (hb.pendingField)  body.append(hb.pendingField,  String(pending));
+
+  fetch(hb.formUrl, {
+    method: 'POST',
+    mode: 'no-cors',                       // Google Forms no devuelve CORS; el envío igual llega
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: body.toString(),
+  }).catch(() => { /* silencioso: el heartbeat nunca debe romper la app */ });
+}
+
+function startHeartbeat() {
+  if (!state.config.heartbeat || !state.config.heartbeat.formUrl) return;
+  sendHeartbeat();                                   // primer envío inmediato
+  setInterval(sendHeartbeat, 5 * 60 * 1000);         // luego cada 5 minutos
+  console.log('[heartbeat] Activado');
+}
+
+/* ===========================
    START
    =========================== */
 (async () => {
   const ok = await loadVenueConfig();
-  if (ok) startPolling();
+  if (ok) {
+    startPolling();
+    startHeartbeat();
+  }
 })();
 </script>
 </body>
