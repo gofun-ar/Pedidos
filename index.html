@@ -1641,7 +1641,7 @@ function aggregateProducts(orders) {
       const key = p.name;
       const existing = map.get(key) || { qty: 0, subtotal: 0 };
       existing.qty += p.qty;
-      existing.subtotal += p.qty * (p.price || 0);
+      existing.subtotal += p.price || 0;  // p.price = l.value = total de la línea (ya incluye qty)
       totalItems += p.qty;
       map.set(key, existing);
     }
@@ -1859,7 +1859,7 @@ async function loadVenueConfig() {
         <div style="font-size:18px;font-weight:700;margin-bottom:12px;">URL incompleta</div>
         <div style="font-size:14px;color:var(--gf-text-muted);line-height:1.7;">
           Abrí la URL correcta para tu local.<br>
-          Ejemplo: <code style="background:var(--gf-surface2);padding:2px 8px;border-radius:4px;">...GoFun/?v=discoteca</code>
+          Ejemplo: <code style="background:var(--gf-surface2);padding:2px 8px;border-radius:4px;">...GoFun/?v=tokyo</code>
         </div>
       </div>`);
     setStatus('err', 'Sin local configurado');
