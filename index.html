@@ -1765,9 +1765,10 @@ document.getElementById('btnTotals').addEventListener('click', () => {
    COMPARTIR RESUMEN DEL TURNO
    =========================== */
 function buildShiftSummaryText() {
+  const orders = state.orders || [];
   const allowedStations = (state.config.stationIds || []).map(Number).filter(n => !Number.isNaN(n));
   const pending = [], served = [], refunded = [];
-  for (const o of state.orders) {
+  for (const o of orders) {
     const sid = o.raw && o.raw.station ? Number(o.raw.station.id) : null;
     if (allowedStations.length > 0 && (sid == null || !allowedStations.includes(sid))) continue;
     if (state.refundedMap[o.id]) refunded.push(o);
@@ -1817,24 +1818,38 @@ function buildShiftSummaryText() {
 }
 
 document.getElementById('btnShareTotals').addEventListener('click', async () => {
-  const text = buildShiftSummaryText();
-  // navigator.share abre el menú nativo (WhatsApp incluido) en tablets/celulares
+  let text;
+  try {
+    text = buildShiftSummaryText();
+  } catch (err) {
+    alert('No hay datos para compartir todavía. Esperá el primer pedido.');
+    return;
+  }
+
+  // Intentar share nativo (WhatsApp, etc.)
   if (navigator.share) {
     try {
-      await navigator.share({ text });
+      await navigator.share({ title: 'Resumen de turno', text });
       return;
     } catch (e) {
-      if (e.name === 'AbortError') return; // usuario canceló, no hacer nada
-      // si falla por otra razón, cae al clipboard
+      if (e.name === 'AbortError') return; // usuario canceló
     }
   }
+
   // Fallback: copiar al portapapeles
   try {
     await navigator.clipboard.writeText(text);
-    alert('Resumen copiado al portapapeles.\nPegalo en WhatsApp o donde necesites.');
+    alert('✅ Resumen copiado.\nPegalo en WhatsApp o donde necesites.');
   } catch {
-    // Último recurso: prompt con el texto seleccionable
-    prompt('Copiá el resumen manualmente:', text);
+    // Último recurso: textarea seleccionable
+    const ta = document.createElement('textarea');
+    ta.value = text;
+    ta.style.cssText = 'position:fixed;top:20px;left:20px;right:20px;bottom:20px;z-index:9999;font-size:12px;padding:12px;border-radius:8px;';
+    document.body.appendChild(ta);
+    ta.focus();
+    ta.select();
+    alert('Seleccioná todo el texto y copialo manualmente (Ctrl+C o mantener presionado → Copiar).');
+    setTimeout(() => ta.remove(), 5000);
   }
 });
 
@@ -1856,8 +1871,7 @@ async function loadVenueConfig() {
         <div class="big">⚙</div>
         <div style="font-size:18px;font-weight:700;margin-bottom:12px;">URL incompleta</div>
         <div style="font-size:14px;color:var(--gf-text-muted);line-height:1.7;">
-          Abrí la URL correcta para tu local.<br>
-          Ejemplo: <code style="background:var(--gf-surface2);padding:2px 8px;border-radius:4px;">...GoFun/?v=tokyo</code>
+          Abrí la URL correcta para tu local.
         </div>
       </div>`);
     setStatus('err', 'Sin local configurado');
@@ -1955,6 +1969,11 @@ function openSettings() {
 function closeSettings() {
   document.getElementById('modalBg').classList.remove('show');
 }
+function stopPolling() {
+  if (state.pollTimer)      { clearInterval(state.pollTimer);      state.pollTimer = null; }
+  if (state.operatorsTimer) { clearInterval(state.operatorsTimer); state.operatorsTimer = null; }
+}
+
 document.getElementById('btnSettings').addEventListener('click', openSettings);
 document.getElementById('btnCancel').addEventListener('click', closeSettings);
 document.getElementById('btnSave').addEventListener('click', () => {
