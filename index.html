@@ -1325,11 +1325,9 @@ function setStatus(type, text) {
   document.getElementById('statusText').textContent = text;
 }
 
-function fmtMoney(cents) {
-  // Los precios en EasyGoBand están en "céntimos x 1000" (ej: 1300000 = $1.300,00)
-  // Ajustamos a la nomenclatura local
-  const value = cents / 100;
-  return value.toLocaleString('es-AR', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+function fmtMoney(value) {
+  // Los valores de la API ya están en pesos — sin divisiones, sin decimales
+  return Math.round(value).toLocaleString('es-AR', { minimumFractionDigits: 0, maximumFractionDigits: 0 });
 }
 
 function ageMinutes(iso) {
